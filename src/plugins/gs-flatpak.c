@@ -214,7 +214,7 @@ app_is_blacklisted_gnome_flatpak (AsApp *app, AsAppScope scope, FlatpakRemote *x
 	};
 
 	g_autoptr(SoupURI) soup_uri = NULL;
-	const char *remote_url = NULL;
+	g_autofree char *remote_url = NULL;
 	const char *remote_host = NULL;
 	const char *remote_path = NULL;
 
@@ -327,7 +327,7 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 	if (default_branch == NULL &&
 	    (self->scope == AS_APP_SCOPE_SYSTEM) &&
 	    (g_strcmp0 (flatpak_remote_get_name (xremote), "eos-apps") == 0)) {
-		const char *remote_url = flatpak_remote_get_url (xremote);
+		g_autofree char *remote_url = flatpak_remote_get_url (xremote);
 
 		if (remote_url != NULL) {
 			g_autoptr(SoupURI) soup_uri = NULL;
