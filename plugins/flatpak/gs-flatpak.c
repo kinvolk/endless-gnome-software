@@ -274,9 +274,6 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 		return FALSE;
 	}
 
-	/* ensure the token cache */
-	as_store_load_search_cache (store);
-
 	/* only add the specific app for noenumerate=true */
 	if (flatpak_remote_get_noenumerate (xremote)) {
 		g_autofree gchar *tmp = NULL;
@@ -336,6 +333,10 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 
 	/* add them to the main store */
 	as_store_add_apps (self->store, app_filtered);
+
+	/* ensure the token cache */
+	as_store_load_search_cache (store);
+
 	return TRUE;
 }
 

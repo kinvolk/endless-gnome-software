@@ -790,6 +790,17 @@ gs_plugins_flatpak_ref_func (GsPluginLoader *plugin_loader)
 	g_assert (ret);
 	g_assert_cmpint (gs_app_get_state (runtime), ==, AS_APP_STATE_INSTALLED);
 
+	/* all the apps should have the flatpak keyword */
+	g_object_unref (plugin_job);
+	plugin_job = gs_plugin_job_newv (GS_PLUGIN_ACTION_SEARCH,
+					 "search", "flatpak",
+					 "refine-flags", GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON,
+					 NULL);
+	list_all = gs_plugin_loader_job_process (plugin_loader, plugin_job, NULL, &error);
+	g_assert_no_error (error);
+	g_assert (list_all != NULL);
+	g_assert_cmpint (gs_app_list_length (list_all), ==, 2);
+
 	/* write a flatpakref file */
 	testdir2 = gs_test_get_filename (TESTDATADIR, "app-with-runtime");
 	if (testdir2 == NULL)
