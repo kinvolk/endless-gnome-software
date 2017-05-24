@@ -47,6 +47,7 @@ struct _GsFlatpak {
 	AsStore			*store;
 	gchar			*id;
 	guint			 changed_id;
+	GVolumeMonitor		*volume_monitor;
 };
 
 G_DEFINE_TYPE (GsFlatpak, gs_flatpak, G_TYPE_OBJECT)
@@ -214,6 +215,46 @@ remote_is_eos_apps (FlatpakRemote *remote)
 }
 
 static gboolean
+gs_flatpak_is_removable_remote (GsFlatpak *self,
+				FlatpakRemote *remote)
+{
+	g_autofree gchar *remote_url = flatpak_remote_get_url (remote);
+	g_autoptr(GList) drives = NULL;
+
+	/* skip if the remote does not have a local URI as that means it cannot
+	 * be pointing to a removable media */
+	if (!g_str_has_prefix (remote_url, "file://"))
+		return FALSE;
+
+	drives = g_volume_monitor_get_connected_drives (self->volume_monitor);
+	for (GList *current = drives; current != NULL; current = current->next) {
+		GDrive *drive = G_DRIVE (current->data);
+		g_autoptr(GList) volumes = NULL;
+
+		if (!g_drive_is_media_removable (drive))
+			continue;
+
+		volumes = g_drive_get_volumes (drive);
+		for (GList *volume = volumes; volume != NULL; volume = volume->next) {
+			g_autoptr(GMount) mount = g_volume_get_mount (G_VOLUME (volume->data));
+			g_autoptr(GFile) mount_root = NULL;
+			g_autofree gchar *uri = NULL;
+
+			if (!mount)
+				continue;
+
+			mount_root = g_mount_get_root (mount);
+			uri = g_file_get_uri (mount_root);
+
+			if (g_str_has_prefix (remote_url, uri))
+				return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+static gboolean
 gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 				  FlatpakRemote *xremote,
 				  GCancellable *cancellable,
@@ -231,6 +272,9 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 	g_autoptr(GFile) file = NULL;
 	g_autoptr(GSettings) settings = NULL;
 	g_autoptr(GPtrArray) app_filtered = NULL;
+	g_autofree gchar *remote_url = NULL;
+	g_autoptr(GFile) remote_local_repo = NULL;
+	gboolean remote_is_removable_media = FALSE;
 
 	/* profile */
 	ptask = as_profile_start (gs_plugin_get_profile (self->plugin),
@@ -238,6 +282,17 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 				  gs_flatpak_get_id (self),
 				  flatpak_remote_get_name (xremote));
 	g_assert (ptask != NULL);
+
+	remote_url = flatpak_remote_get_url (xremote);
+	if (g_str_has_prefix (remote_url, "file://")) {
+		remote_local_repo = g_file_new_for_uri (remote_url);
+		if (!g_file_query_exists (remote_local_repo, cancellable)) {
+			g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+				     "Local repo for remote %s not found: %s",
+				     flatpak_remote_get_name (xremote), remote_url);
+			return FALSE;
+		}
+	}
 
 	/* get the AppStream data location */
 	appstream_dir = flatpak_remote_get_appstream_dir (xremote, NULL);
@@ -299,6 +354,8 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 		default_branch = g_strdup ("eos3");
 	}
 
+	remote_is_removable_media = gs_flatpak_is_removable_remote (self, xremote);
+
 	/* get all the apps and fix them up */
 	apps = as_store_get_apps (store);
 	app_filtered = g_ptr_array_new ();
@@ -327,6 +384,18 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 		as_app_set_scope (app, self->scope);
 		as_app_set_origin (app, flatpak_remote_get_name (xremote));
 		as_app_add_keyword (app, NULL, "flatpak");
+
+		if (remote_is_removable_media) {
+			as_app_add_category (app, "USB");
+
+			/* add a keyword so users can search for "usb" */
+			as_app_add_keyword (app, NULL, "usb");
+
+			/* adding the priority so these apps are not filtered out in the
+			 * category view when there are others with the same ID */
+			as_app_set_priority (app, 100);
+		}
+
 		g_debug ("adding %s", as_app_get_unique_id (app));
 		g_ptr_array_add (app_filtered, app);
 	}
@@ -3468,6 +3537,7 @@ gs_flatpak_init (GsFlatpak *self)
 	self->broken_remotes = g_hash_table_new_full (g_str_hash, g_str_equal,
 						      g_free, NULL);
 	self->store = as_store_new ();
+	self->volume_monitor = g_volume_monitor_get ();
 	g_signal_connect (self->store, "app-added",
 			  G_CALLBACK (gs_flatpak_store_app_added_cb),
 			  self);
