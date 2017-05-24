@@ -2761,6 +2761,44 @@ gs_flatpak_create_app_from_repo_dir (GsFlatpak *self,
 	return app;
 }
 
+static void
+gs_flatpak_mount_removed (GVolumeMonitor *volume_monitor,
+			  GDrive *mount,
+			  gpointer user_data)
+{
+	GsFlatpak *self = GS_FLATPAK (user_data);
+	g_autoptr(GPtrArray) remotes = flatpak_installation_list_remotes (self->installation,
+									  NULL, NULL);
+	if (remotes == NULL || remotes->len == 0)
+		return;
+
+	for (guint i = 0; i < remotes->len; ++i) {
+		FlatpakRemote *remote = g_ptr_array_index (remotes, i);
+		g_autoptr(GFile) remote_local_repo = NULL;
+		const gchar *remote_name = flatpak_remote_get_name (remote);
+		g_autofree gchar *remote_url = NULL;
+
+		if (!g_hash_table_lookup (self->loaded_remotes, remote_name))
+			continue;
+
+		remote_url = flatpak_remote_get_url (remote);
+		if (!g_str_has_prefix (remote_url, "file://"))
+			continue;
+
+		remote_local_repo = g_file_new_for_uri (remote_url);
+		if (g_file_query_exists (remote_local_repo, NULL))
+			continue;
+
+		/* ensure all remotes will be reconsidered */
+		g_hash_table_remove_all (self->broken_remotes);
+		g_hash_table_remove_all (self->loaded_remotes);
+		as_store_remove_all (self->store);
+
+		gs_plugin_reload (self->plugin);
+		return;
+	}
+}
+
 gboolean
 gs_flatpak_app_install (GsFlatpak *self,
 			GsApp *app,
@@ -3632,6 +3670,9 @@ gs_flatpak_init (GsFlatpak *self)
 	self->volume_monitor = g_volume_monitor_get ();
 	g_signal_connect (self->store, "app-added",
 			  G_CALLBACK (gs_flatpak_store_app_added_cb),
+			  self);
+	g_signal_connect (self->volume_monitor, "mount-removed",
+			  G_CALLBACK (gs_flatpak_mount_removed),
 			  self);
 	g_signal_connect (self->store, "app-removed",
 			  G_CALLBACK (gs_flatpak_store_app_removed_cb),
