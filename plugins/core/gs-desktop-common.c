@@ -284,6 +284,14 @@ static const GsDesktopMap map_reference[] = {
 	{ NULL }
 };
 
+/* USB */
+static const GsDesktopMap map_usb[] = {
+	{ "all",		NC_("Menu of Reference", "All"),
+					{ "USB",
+					  NULL } },
+	{ NULL }
+};
+
 /* main categories */
 static const GsDesktopData msdata[] = {
 	/* TRANSLATORS: this is the menu spec main category for Learning */
@@ -309,6 +317,8 @@ static const GsDesktopData msdata[] = {
 	 * Spanish the direct translation of "Programming" (noun) is used */
 	{ "developer-tools",	map_developertools,	N_("Dev Tools"),
 				"preferences-other-symbolic", "#7b3eb5", 5 },
+	{ "usb",		map_usb,		N_("USB"),
+				"media-removable-symbolic", "#ccff00", 5 },
 	{ NULL }
 };
 
