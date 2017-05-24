@@ -471,7 +471,10 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 	/* only use the temporary GsFlatpak to avoid the auth dialog */
 	for (guint i = 0; i < priv->flatpaks->len; i++) {
 		GsFlatpak *flatpak = g_ptr_array_index (priv->flatpaks, i);
-		if (gs_flatpak_get_flags (flatpak) & GS_FLATPAK_FLAG_IS_TEMPORARY) {
+		GFileType file_type = g_file_query_file_type (file, G_FILE_QUERY_INFO_NONE,
+							      cancellable);
+		if (file_type == G_FILE_TYPE_DIRECTORY ||
+		    gs_flatpak_get_flags (flatpak) & GS_FLATPAK_FLAG_IS_TEMPORARY) {
 			if (!gs_flatpak_file_to_app (flatpak, list_new, file,
 						     cancellable, error)) {
 				return FALSE;

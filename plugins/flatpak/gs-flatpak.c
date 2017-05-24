@@ -41,6 +41,7 @@ struct _GsFlatpak {
 	GsFlatpakFlags		 flags;
 	FlatpakInstallation	*installation;
 	GHashTable		*broken_remotes;
+	GHashTable		*loaded_remotes;
 	GFileMonitor		*monitor;
 	AsAppScope		 scope;
 	GsPlugin		*plugin;
@@ -325,6 +326,8 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 				   AS_APP_SEARCH_MATCH_KEYWORD |
 				   AS_APP_SEARCH_MATCH_ID);
 	if (!as_store_from_file (store, file, NULL, cancellable, error)) {
+		g_hash_table_remove (self->loaded_remotes,
+				     flatpak_remote_get_name (xremote));
 		gs_utils_error_convert_appstream (error);
 		return FALSE;
 	}
@@ -402,6 +405,8 @@ gs_flatpak_add_apps_from_xremote (GsFlatpak *self,
 
 	/* add them to the main store */
 	as_store_add_apps (self->store, app_filtered);
+	g_hash_table_add (self->loaded_remotes,
+			  g_strdup (flatpak_remote_get_name (xremote)));
 
 	/* ensure the token cache */
 	as_store_load_search_cache (store);
@@ -1322,6 +1327,7 @@ gs_flatpak_refresh (GsFlatpak *self,
 
 	/* give all the repos a second chance */
 	g_hash_table_remove_all (self->broken_remotes);
+	g_hash_table_remove_all (self->loaded_remotes);
 
 	/* manually drop the cache */
 	if (!flatpak_installation_drop_caches (self->installation,
@@ -2690,6 +2696,71 @@ gs_flatpak_create_app_from_repo_file (GsFlatpak *self,
 	return g_steal_pointer (&app);
 }
 
+static GsApp *
+gs_flatpak_create_app_from_repo_dir (GsFlatpak *self,
+				     GFile *file,
+				     GCancellable *cancellable,
+				     GError **error)
+{
+	g_autoptr(GPtrArray) remotes = NULL;
+	g_autofree gchar *uri = NULL;
+	gboolean dir_has_repo = FALSE;
+	gboolean reload_overview = FALSE;
+	GsApp *app = NULL;
+
+	remotes = flatpak_installation_list_remotes (self->installation, cancellable, error);
+	if (remotes == NULL)
+		return NULL;
+
+	uri = g_file_get_uri (file);
+
+	for (guint i = 0; i < remotes->len; ++i) {
+		const gchar *remote_name;
+		FlatpakRemote *remote = g_ptr_array_index (remotes, i);
+		g_autofree gchar *url = flatpak_remote_get_url (remote);
+		g_autoptr(GError) local_error = NULL;
+
+		/* skip if the remote does not have the dir's path as a prefix */
+		if (!g_str_has_prefix (url, uri))
+			continue;
+
+		dir_has_repo = TRUE;
+		remote_name = flatpak_remote_get_name (remote);
+
+		/* we already have apps from this repo so skip it */
+		if (g_hash_table_lookup (self->loaded_remotes, remote_name) != NULL)
+			continue;
+
+		if (!gs_flatpak_add_apps_from_xremote (self, remote, cancellable, &local_error)) {
+			g_debug ("Failed to add apps from remote %s: %s; skipping...",
+				 remote_name, local_error->message);
+			continue;
+		}
+
+		/* just in case the remote had been considered broken, remove it */
+		g_hash_table_remove (self->broken_remotes, remote_name);
+		reload_overview = TRUE;
+	}
+
+	if (!dir_has_repo) {
+		g_set_error (error, G_IO_ERROR_FAILED, G_IO_ERROR_NOT_SUPPORTED,
+			     "No remotes from the given directory: %s", uri);
+		return NULL;
+	}
+
+	app = gs_app_new ("com.endlessm.RemovableMediaRepo");
+	gs_app_set_kind (app, AS_APP_KIND_SOURCE);
+	gs_app_set_state (app, AS_APP_STATE_INSTALLED);
+	gs_app_add_quirk (app, AS_APP_QUIRK_NOT_LAUNCHABLE);
+	gs_app_set_name (app, GS_APP_QUALITY_NORMAL, "Removable Media Repo");
+	gs_app_set_management_plugin (app, gs_plugin_get_name (self->plugin));
+	gs_app_set_metadata (app, "EndlessOS::RemovableMediaCategory", "usb");
+	if (reload_overview)
+		gs_app_set_metadata (app, "EndlessOS::ReloadOverview", "true");
+
+	return app;
+}
+
 gboolean
 gs_flatpak_app_install (GsFlatpak *self,
 			GsApp *app,
@@ -3144,9 +3215,27 @@ gs_flatpak_file_to_app_repo (GsFlatpak *self,
 {
 	g_autoptr(GsApp) app = NULL;
 	g_autoptr(FlatpakRemote) xremote = NULL;
+	GFileType file_type = G_FILE_TYPE_UNKNOWN;
 
 	/* create app */
-	app = gs_flatpak_create_app_from_repo_file (self, file, cancellable, error);
+	file_type = g_file_query_file_type (file, G_FILE_QUERY_INFO_NONE, cancellable);
+	if (file_type == G_FILE_TYPE_DIRECTORY) {
+		g_autoptr(GError) local_error = NULL;
+		app = gs_flatpak_create_app_from_repo_dir (self, file, cancellable,
+							   &local_error);
+		if (app == NULL) {
+			g_autofree gchar *path = g_file_get_path (file);
+			g_debug ("Failed to get app from dir %s: %s; skipping", path,
+				 local_error->message);
+			return TRUE;
+		}
+
+		gs_app_list_add (list, app);
+		return TRUE;
+	} else {
+		app = gs_flatpak_create_app_from_repo_file (self, file, cancellable,
+							    error);
+	}
 	if (app == NULL)
 		return FALSE;
 
@@ -3366,6 +3455,7 @@ gs_flatpak_file_to_app (GsFlatpak *self,
 		NULL };
 	const gchar *mimetypes_repo[] = {
 		"application/vnd.flatpak.repo",
+		"inode/directory",
 		NULL };
 	const gchar *mimetypes_ref[] = {
 		"application/vnd.flatpak.ref",
@@ -3535,6 +3625,8 @@ static void
 gs_flatpak_init (GsFlatpak *self)
 {
 	self->broken_remotes = g_hash_table_new_full (g_str_hash, g_str_equal,
+						      g_free, NULL);
+	self->loaded_remotes = g_hash_table_new_full (g_str_hash, g_str_equal,
 						      g_free, NULL);
 	self->store = as_store_new ();
 	self->volume_monitor = g_volume_monitor_get ();
